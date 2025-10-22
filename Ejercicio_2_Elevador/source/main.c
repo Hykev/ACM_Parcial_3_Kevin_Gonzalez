@@ -11,6 +11,8 @@
 //         E = PB10
 //         RS = PB11
 
+// Buzzer: PA8
+
 // Motor elevador: IN1–IN4 = PB12–PB15
 
 // Motor puerta:   IN1–IN4 = PC8–PC11
@@ -28,6 +30,11 @@
 volatile uint8_t elevator_floor = 0; // Piso actual del elevador
 volatile uint8_t next_floors[3] = {0,0,0};   // Piso objetivo
 volatile uint8_t next_floors_temp[3] = {0,0,0};   // Piso objetivo
+
+// buzzer
+volatile uint8_t buzzer_flag = 0; // Bandera para activar el buzzer
+volatile uint16_t buzzer_beep_counter = 0; // Contador para la duración del beep
+volatile uint8_t buzzer_last_state = 0; // Ultimo estado del buzzer
 
 // Motores
 volatile uint8_t elevator_moving = 0; // Estado de movimiento del elevador (0: detenido, 1: arriba, 2: abajo)
@@ -89,6 +96,30 @@ void third_to_first_floor(void) {
     elevator_moving = 2;
 }
 
+void buzzer_beep(void) {
+    // Configurar pin del buzzer como salida
+        buzzer_beep_counter = 1000; // Duración del beep en ms
+        buzzer_flag = 1; // Beep al llegar al piso
+        buzzer_last_state = 0; // Duración del beep en ms
+
+}
+
+void isr_buzzer_beep(void) {
+    if (buzzer_flag == 1) {
+        buzzer_beep_counter--; // Duración del beep en ms
+        if (buzzer_beep_counter == 0) {
+            buzzer_flag = 0; // Apagar el buzzer
+            GPIOA->BSRR |= (1 << (8 + 16)); // Apagar pin del buzzer
+        }
+
+        if (buzzer_last_state == 0) {
+            GPIOA->BSRR |= (1 << 8); // Encender pin del buzzer
+        } else {
+            GPIOA->BSRR |= (1 << (8 + 16)); // Apagar pin del buzzer
+        }
+    
+    }
+}
 
 void isr_elevator_motor_movement() {
     switch (elevator_moving) {
@@ -100,6 +131,7 @@ void isr_elevator_motor_movement() {
             if (elevator_motor_right_counter == 1) {
                 move_queue(); // Mover la cola de pisos
                 door_open(); // Abrir puerta al llegar al piso
+                buzzer_beep(); // Beep al llegar al piso
             }
             GPIOB->BSRR |= (0x0F << (12+16)); // Apagar PB12–PB15
             switch(elevator_motor_right_fsm) {
@@ -130,6 +162,7 @@ void isr_elevator_motor_movement() {
             if (elevator_motor_left_counter == 1) {
                 move_queue(); // Mover la cola de pisos
                 door_open(); // Abrir puerta al llegar al piso
+                buzzer_beep(); // Beep al llegar al piso
             }
             GPIOB->BSRR |= (0x0F << (12+16)); // Apagar PB12–PB15
             switch(elevator_motor_left_fsm) {
@@ -365,6 +398,13 @@ void move_queue(void) {
     next_floors[2] = 0;
 }
 
+void add_queue(uint8_t floor) {
+    // Desplazar la cola de pisos hacia adelante
+    next_floors[0] = next_floors[1];
+    next_floors[1] = next_floors[2];
+    next_floors[2] = 0;
+}
+
 // -x-x-x-x- Funciones Displays -x-x-x-x-
     
 uint8_t display_digits(uint8_t digit) {
@@ -380,25 +420,40 @@ uint8_t display_digits(uint8_t digit) {
     }
 }
 
+volatile uint8_t display_animation_bits = 0b000000;
+
 // 7-seg: leds = a,b,c,d,e,g → PB0–PB5
 //        displays = PC0–PC3
-void isr_display_time_multiplexing() {
+void isr_display_digits_time_multiplexing() {
     switch (display_fsm) {
-        // 7-seg: leds = A,B (PA0-PA1), C,D (PA11-PA12), E,F,G(PA4-PA6), displays = PA7-PA10
         case 0:
-        GPIOB->BSRR = (0x3F << 16); // Reset display pines PB0-PB5
-        GPIOC->BSRR = (0xF << 16); // Reset display pines de PC0-PC3
-        GPIOB->BSRR = (display_digits(elevator_floor) << 0);
-        GPIOC->BSRR = (1 << 0); // Encender display 1
-        display_fsm++;
-        break;
+            GPIOB->BSRR = (0x3F << 16); // Reset display pines PB0-PB5
+            GPIOC->BSRR = (0xF << 16); // Reset display pines de PC0-PC3
+            GPIOB->BSRR = (display_digits(elevator_floor) << 0);
+            GPIOC->BSRR = (1 << 0); // Encender display 1
+            display_fsm++;
+            break;
         case 1:
-        
+            GPIOB->BSRR = (0x3F << 16); // Reset display pines PB0-PB5
+            GPIOC->BSRR = (0xF << 16); // Reset display pines de PC0-PC3
+            GPIOB->BSRR = (display_animation_bits << 0);
+            GPIOC->BSRR = (1 << 1); // Encender display 2
+            display_fsm++;
+            break;
         case 2:
-        
+            GPIOB->BSRR = (0x3F << 16); // Reset display pines PB0-PB5
+            GPIOC->BSRR = (0xF << 16); // Reset display pines de PC0-PC3
+            GPIOB->BSRR = (0b000000 << 0); // Apagado
+            GPIOC->BSRR = (1 << 2); // Encender display 3
+            display_fsm++;
+            break;
         case 3:
-        
-
+            GPIOB->BSRR = (0x3F << 16); // Reset display pines PB0-PB5
+            GPIOC->BSRR = (0xF << 16); // Reset display pines de PC0-PC3
+            GPIOB->BSRR = (0b000000 << 0); // Apagado
+            GPIOC->BSRR = (1 << 3); // Encender display 4
+            display_fsm++;
+            break;
         default:
         GPIOB->BSRR = (0x3F << 16); // Reset display pines PB0-PB5
         GPIOC->BSRR = (0xF << 16); // Reset display pines de PC0-PC3
@@ -406,68 +461,112 @@ void isr_display_time_multiplexing() {
         break;
     }
 }
+volatile uint8_t display_animation_fsm = 0;
 
 void isr_display_animation() {
-    if (elevator_moving == 1) {
-        // Lógica de parpadeo o animación
+    switch(display_animation_fsm) {
+        case 0:
+            display_animation_fsm = 1;
+                switch (elevator_moving) {
+                    case 0: // Detenido
+                        display_animation_bits = 0b100000; // g en medio (apagado)
+                        break;
+                    case 1: // Subiendo
+                        display_animation_bits = 0b010000; // e abajo
+                        break;
+                    case 2: // Bajando
+                        display_animation_bits = 0b000010; // b arriba
+                        break;
+                    default:
+                        display_animation_bits = 0b100000; // g en medio (apagado)
+                        break;
+                }
+            break;
+        case 1:
+            display_animation_fsm = 2;
+            display_animation_bits = display_animation_bits | 0b100000; // g en medio
+            break;
+        case 2:
+            display_animation_fsm = 0;
+                                switch (elevator_moving) {
+                    case 0: // Detenido
+                        display_animation_bits = 0b100000; // g en medio (apagado)
+                        break;
+                    case 1: // Subiendo
+                        display_animation_bits = 0b000010; // b arriba
+                    break;
+                    case 2: // Bajando
+                        display_animation_bits = 0b010000; // e abajo
+                        break;
+                    default:
+                        display_animation_bits = 0b100000; // g en medio (apagado)
+                        break;
+                }
+            break;
+        default:
+            display_animation_fsm = 0;
+            break;
     }
 }
 
 // -x-x-x-x- Funciones Keypad -x-x-x-x-
-int16_t keypad_read() {
-    GPIOC->ODR |= (0x0F << 0);  // reset
 
-    GPIOC->ODR &= ~(1 << 0);
-    timer_loop(4);
-    if        ((GPIOC-> IDR & (1 << 4)) == 0) {
-        return 1;
-    } else if ((GPIOC-> IDR & (1 << 5)) == 0) {
-        return 4;
-    } else if ((GPIOC-> IDR & (1 << 6)) == 0) {
-        return 7;
-    } else if ((GPIOC-> IDR & (1 << 7)) == 0) {
-        return '*';
+// Keypad: columnas (piso 1–3) = PA0, PA1, PA4  → entradas con pull-up
+//         fila (común) = PA15 → salida
+
+volatile uint8_t fsm_keypad = 0;
+
+void isr_keypad_read() {
+    switch(fsm_keypad) {
+        case 0:
+            GPIOC->ODR |= (0b10011 << 0);  // reset columnas
+            GPIOC->ODR &= ~(1 << 0); // columna 1
+            if ((GPIOC-> IDR & (1 << 15)) == 0) {
+                if (next_floors[0] == 0) {
+                    next_floors[0] = 1;
+                } else if (next_floors[1] == 0 && next_floors[0] != 1) {
+                    next_floors[1] = 1;
+                } else if (next_floors[2] == 0 && next_floors[1] != 1) {
+                    next_floors[2] = 1;
+                } else {
+                    
+                }
+            }
+            fsm_keypad = 1;
+            break;
+        case 1:
+            GPIOC->ODR |= (0b10011 << 0);  // reset columnas
+            GPIOC->ODR &= ~(1 << 1); // columna 2
+            if ((GPIOC-> IDR & (1 << 15)) == 0) {
+                // Agregar la solicitud del piso 2 a la cola
+                if (next_floors[0] == 0) {
+                    next_floors[0] = 2;
+                } else if (next_floors[1] == 0 && next_floors[0] != 2) {
+                    next_floors[1] = 2;
+                } else if (next_floors[2] == 0 && next_floors[1] != 2) {
+                    next_floors[2] = 2;
+                } else {
+                    
+                }
+            }
+            fsm_keypad = 2;
+            break;
+        case 2:
+            GPIOC->ODR |= (0b10011 << 0);  // reset columnas
+            GPIOC->ODR &= ~(1 << 4); // columna 3
+            if ((GPIOC-> IDR & (1 << 15)) == 0) {
+                // Agregar la solicitud del piso 3 a la cola
+                if (next_floors[0] == 0) {
+                    next_floors[0] = 3;
+                } else if (next_floors[1] == 0 && next_floors[0] != 3) {
+                    next_floors[1] = 3;
+                } else if (next_floors[2] == 0 && next_floors[1] != 3) {
+                    next_floors[2] = 3;
+                } else {
+                    
+                }
+            }
+            fsm_keypad = 0;
+            break;
     }
-
-
-    GPIOC->ODR |= (0x0F << 0);  // reset
-    GPIOC->ODR &= ~(1 << 1);
-    timer_loop(4);
-    if        ((GPIOC-> IDR & (1 << 4)) == 0) {
-        return 2;
-    } else if ((GPIOC-> IDR & (1 << 5)) == 0) {
-        return 5;
-    } else if ((GPIOC-> IDR & (1 << 6)) == 0) {
-        return 8;
-    } else if ((GPIOC-> IDR & (1 << 7)) == 0) {
-        return 0;
-    }
-
-    GPIOC->ODR |= (0x0F << 0);  // reset
-    GPIOC->ODR &= ~(1 << 2);
-    timer_loop(4);
-    if        ((GPIOC-> IDR & (1 << 4)) == 0) {
-        return 3;
-    } else if ((GPIOC-> IDR & (1 << 5)) == 0) {
-        return 6;
-    } else if ((GPIOC-> IDR & (1 << 6)) == 0) {
-        return 9;
-    } else if ((GPIOC-> IDR & (1 << 7)) == 0) {
-        return '#';
-    }
-
-    GPIOC->ODR |= (0x0F << 0);  // reset
-    GPIOC->ODR &= ~(1 << 3);
-    timer_loop(4);
-    if        ((GPIOC-> IDR & (1 << 4)) == 0) {
-        return 'A';
-    } else if ((GPIOC-> IDR & (1 << 5)) == 0) {
-        return 'B';
-    } else if ((GPIOC-> IDR & (1 << 6)) == 0) {
-        return 'C';
-    } else if ((GPIOC-> IDR & (1 << 7)) == 0) {
-        return 'D';
-    }
-
-    return -1; // Si no hay tecla
 }
