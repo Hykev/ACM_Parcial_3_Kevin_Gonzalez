@@ -2,24 +2,25 @@
 #include <string.h>
 #include <stdio.h>
 #include "stm32l053xx.h"
+#include "core_cm0plus.h" // ya viene con CMSIS
 
 // -x-x-x-x- Definición de pines elevador -x-x-x-x-
 
-// 7-seg: leds = a,b,c,d,e,g → PB0–PB5
-//        displays = PC0–PC3
+// 7-seg: leds = a,b,c,d,e,g → PB0–PB5 AZUL
+//        displays = PC0–PC3 NEGRO
 
-// LCD:    D4–D7 = PC4–PC7
-//         E = PB10
-//         RS = PB11
+// LCD:    D4–D7 = PC4–PC7 AQUA
+//         E = PB10 VERDE
+//         RS = PB11 VERDE
 
-// Buzzer: PA8
+// Buzzer: PA8 CAFE
 
-// Motor elevador: IN1–IN4 = PB12–PB15
+// Motor elevador: IN1–IN4 = PB12–PB15 BLANCO
 
-// Motor puerta:   IN1–IN4 = PC8–PC11
+// Motor puerta:   IN1–IN4 = PC8–PC11 AMARILLO
 
-// Keypad: columnas (piso 1–3) = PA0, PA1, PA4  → entradas con pull-up
-//         fila (común) = PA15 → salida (controlada por software)
+// Keypad: columnas (piso 1–3) = PA0, PA1, PA4  → entradas con pull-up ROJO
+//         fila (común) = PA15 → salida (controlada por software) NARANJA
 
 // Botones para llamar al piso:
 //         Piso 1 = PA6 (EXTI6)
@@ -31,9 +32,48 @@
 //         Piso 2 = PB7
 //         Piso 3 = PB8
 
+// USART2: TX = PA2, RX = PA3
+
+// -x-x-x-x- Funciones prototipo -x-x-x-x-
+// --- Prototipos (ISR lógicas y helpers) ---
+void isr_display_digits_time_multiplexing(void);
+void isr_keypad_read(void);
+void isr_display_animation(void);
+void isr_elevator_logic(void);
+void isr_lcd_update(void);
+
+void isr_elevator_motor_movement(void);
+void isr_door_motor_movement(void);
+void isr_buzzer_beep(void);
+
+void push1_button_isr(void);
+void push2_button_isr(void);
+void push3_button_isr(void);
+
+void door_open(void);
+void door_close(void);
+void move_queue(void);
+
+// LCD helpers
+void lcd_send_nibble(uint8_t nibble);
+void lcd_cmd(uint8_t cmd);
+void escribir_caracter_lcd(uint8_t caracter);
+void lcd_init(void);
+void lcd_pulso_E(void);
+void escribir_texto_lcd(char *mensaje);
+
+// USART2
+void usart2_init(uint32_t baud);
+void usart2_putc(char c);
+void usart2_write(const char *s);
+void usart2_write_line(const char *s);
+void System_Init(void);
+
+
+
 // -x-x-x-x- Variables Globales -x-x-x-x-
 // Logica elevador
-volatile uint8_t elevator_floor = 0; // Piso actual del elevador
+volatile uint8_t elevator_floor = 1; // Piso actual del elevador
 volatile uint8_t next_floors[3] = {0,0,0};   // Piso objetivo
 
 // buzzer
@@ -45,201 +85,191 @@ volatile uint8_t buzzer_last_state = 0; // Ultimo estado del buzzer
 volatile uint8_t elevator_moving = 0; // Estado de movimiento del elevador (0: detenido, 1: arriba, 2: abajo)
 
 volatile uint8_t elevator_motor_right_fsm = 1; // FSM motor elevador
-volatile uint8_t elevator_motor_right_counter = 0; // contador
+volatile uint16_t elevator_motor_right_counter = 0; // contador
 
 volatile uint8_t elevator_motor_left_fsm = 1; // FSM motor elevador
-volatile uint8_t elevator_motor_left_counter = 0; // contador
+volatile uint16_t elevator_motor_left_counter = 0; // contador
 
 // Puerta
 volatile uint8_t door_moving = 0; // Estado de movimiento de la puerta (0: detenido, 1: abriendo, 2: esperando 3: cerrando)
 
 volatile uint8_t door_motor_right_fsm = 1; // FSM motor puerta
-volatile uint8_t door_motor_right_counter = 0; // contador
+volatile uint16_t door_motor_right_counter = 0; // contador
 
 volatile uint8_t door_motor_left_fsm = 1; // FSM motor puerta
-volatile uint8_t door_motor_left_counter = 0; // contador
+volatile uint16_t door_motor_left_counter = 0; // contador
 
-volatile uint8_t door_motor_waiting_counter = 0; // contador
+volatile uint16_t door_motor_waiting_counter = 0; // contador
 
 // Displays
 volatile uint8_t display_fsm = 0;
 
 // LCD
 volatile uint8_t lcd_update_flag = 0;
-volatile char mensaje_tiempo[6];
-volatile char status_message[32] = "Esperando...";
-volatile char queue_message[32] = "Cola: 0, 0, 0";
+char status_message[32] = "Esperando...";
+char queue_message[32] = "Cola: 0, 0, 0";
 
-// -x-x-x-x- Prototipos de funciones -x-x-x-x-
-void usart2_init(uint32_t baud);
-void usart2_putc(char c);
-void usart2_write(const char *s);
-void usart2_write_line(const char *s);
+volatile uint8_t led_test = 0;
 
-
-// -x-x-x-x- Init -x-x-x-x-
-void SystemInit(void)
+    // -x-x-x-x- Init -x-x-x-x-
+void System_Init(void)
 {
-    /* =========================
-     * 1) Reloj del sistema
-     * ========================= */
-    // HSI16 ON
-    RCC->CR |= (1u << 0);
-    while(!(RCC->CR & (1u << 1)));     // HSIRDY
-    // SYSCLK = HSI16
-    RCC->CFGR &= ~(0x3u << 0);
-    RCC->CFGR |=  (0x1u << 0);         // SW=01 HSI16
+    // --- desactiva SysTick por si el template lo dejó activo
+    SysTick->CTRL = 0; SysTick->LOAD = 0; SysTick->VAL = 0;
 
     /* =========================
-     * 2) Habilitar clocks de GPIOs y SYSCFG
+     * 1) Reloj del sistema: HSI16 @16MHz
      * ========================= */
-    RCC->IOPENR |= (1u<<0) | (1u<<1) | (1u<<2); // GPIOA, GPIOB, GPIOC
-    RCC->APB2ENR |= (1u<<0);                   // SYSCFG
-/* =========================
- * 3) Configuración GPIO
- * ========================= */
+    RCC->CR   |= (1u << 0);                           // HSI16 ON
+    while(!(RCC->CR & (1u << 1)));                    // HSIRDY
+    RCC->CFGR &= ~((0x3u<<0) | (0xFu<<4) | (0x7u<<8));// limpia SW/HPRE/PPRE
+    RCC->CFGR |=  (0x1u<<0);                          // SW = 01 (HSI16)
+    while(((RCC->CFGR >> 2) & 0x3u) != 0x1u);         // espera SWS=01
+    RCC->CR   &= ~(1u<<8);                            // MSION = 0 (apaga MSI)
 
-    // --- 7-seg: PB0..PB5 (salida), PC0..PC3 (salida) ---
-    // PB0..PB5: limpia bits 0..11 y pone 01 en cada par (0,2,4,6,8,10)
+    /* =========================
+     * 2) Clocks periféricos
+     * ========================= */
+    RCC->IOPENR  |= (1u<<0) | (1u<<1) | (1u<<2);      // GPIOA/B/C
+    RCC->APB2ENR |= (1u<<0);                          // SYSCFG
+
+    /* =========================
+     * 3) GPIO
+     * ========================= */
+    // 7-seg PB0..PB5
     GPIOB->MODER &= ~0x00000FFFu;
-    GPIOB->MODER |=  0x00000555u;   // PB0..PB5 output (01 por pin)
+    GPIOB->MODER |=  0x00000555u;
 
-    // PC0..PC3: limpia bits 0..7 y pone 01 en cada par
+    // Displays PC0..PC3
     GPIOC->MODER &= ~0x000000FFu;
-    GPIOC->MODER |=  0x00000055u;   // PC0..PC3 output
+    GPIOC->MODER |=  0x00000055u;
 
-    // --- LCD: PC4..PC7 (salida D4..D7), PB10 (E) y PB11 (RS) salida ---
-    // PC4..PC7: limpia bits 8..15 y pone 01 en cada par
+    // LCD PC4..PC7, PB10 (E), PB11 (RS)
     GPIOC->MODER &= ~0x0000FF00u;
-    GPIOC->MODER |=  0x00005500u;   // PC4..PC7 output
-
-    // PB10..PB11: limpia bits 20..23 y pone 01 en cada par
+    GPIOC->MODER |=  0x00005500u;
     GPIOB->MODER &= ~0x00F00000u;
-    GPIOB->MODER |=  0x00500000u;   // PB10, PB11 output
+    GPIOB->MODER |=  0x00500000u;
 
-    // --- Motores: PB12..PB15 (salida), PC8..PC11 (salida) ---
-    // PB12..PB15: limpia bits 24..31 y pone 01 en cada par
+    // Motores PB12..PB15, PC8..PC11
     GPIOB->MODER &= ~0xFF000000u;
-    GPIOB->MODER |=  0x55000000u;   // PB12..PB15 output
-
-    // PC8..PC11: limpia bits 16..23 y pone 01 en cada par
+    GPIOB->MODER |=  0x55000000u;
     GPIOC->MODER &= ~0x00FF0000u;
-    GPIOC->MODER |=  0x00550000u;   // PC8..PC11 output
+    GPIOC->MODER |=  0x00550000u;
 
-    // --- Buzzer: PA8 salida ---
-    GPIOA->MODER &= ~0x00030000u;   // bits 16..17
-    GPIOA->MODER |=  0x00010000u;   // PA8 output
+    // Buzzer PA8
+    GPIOA->MODER &= ~0x00030000u;
+    GPIOA->MODER |=  0x00010000u;
 
-    // --- LEDs PB6, PB7, PB8 salida ---
-    // PB6..PB8: limpia bits 12..17 y pone 01 en cada par (tres pines)
+    // LEDs PB6..PB8
     GPIOB->MODER &= ~0x0003F000u;
-    GPIOB->MODER |=  0x00015000u;   // PB6..PB8 output
+    GPIOB->MODER |=  0x00015000u;
 
-    // --- Keypad: columnas = PA0, PA1, PA4 entradas con pull-up; fila = PA15 salida ---
-    GPIOA->MODER &= ~((0x3u<<(0*2)) | (0x3u<<(1*2)) | (0x3u<<(4*2))); // input
+    // Keypad: PA0,PA1,PA4 input pull-up; PA15 output (fila)
+    GPIOA->MODER &= ~((0x3u<<(0*2)) | (0x3u<<(1*2)) | (0x3u<<(4*2)));
     GPIOA->PUPDR &= ~((0x3u<<(0*2)) | (0x3u<<(1*2)) | (0x3u<<(4*2)));
-    GPIOA->PUPDR |=  ((0x1u<<(0*2)) | (0x1u<<(1*2)) | (0x1u<<(4*2))); // pull-up
+    GPIOA->PUPDR |=  ((0x1u<<(0*2)) | (0x1u<<(1*2)) | (0x1u<<(4*2)));
     GPIOA->MODER &= ~(0x3u << (15*2));
-    GPIOA->MODER |=  (0x1u << (15*2)); // PA15 salida (fila)
+    GPIOA->MODER |=  (0x1u << (15*2));
+    GPIOA->BSRR = (1u << (15 + 16));  // PA15 = LOW
 
-    // --- Botones externos: PA6, PA7, PC12 entradas con pull-up (EXTI) ---
+    // Botones PA6,PA7,PC12 input pull-up
     GPIOA->MODER &= ~((0x3u<<(6*2)) | (0x3u<<(7*2)));
     GPIOA->PUPDR &= ~((0x3u<<(6*2)) | (0x3u<<(7*2)));
-    GPIOA->PUPDR |=  ((0x1u<<(6*2)) | (0x1u<<(7*2)));  // pull-up
+    GPIOA->PUPDR |=  ((0x1u<<(6*2)) | (0x1u<<(7*2)));
     GPIOC->MODER &= ~(0x3u<<(12*2));
     GPIOC->PUPDR &= ~(0x3u<<(12*2));
-    GPIOC->PUPDR |=  (0x1u<<(12*2));  // pull-up
+    GPIOC->PUPDR |=  (0x1u<<(12*2));
 
     /* =========================
-     * UART2 para logging
+     * 4) USART2 (opcional; a 16MHz)
      * ========================= */
     usart2_init(115200);
 
     /* =========================
-     * 4) EXTI: keypad columnas (PA0,PA1,PA4) y botones (PA6,PA7,PC12)
-     *    Flanco bajada (con pull-up)
+     * 5) EXTI: keypad y botones (PA0,1,4,6,7; PC12) + botón usuario PC13
      * ========================= */
-    // Selección de puertos en SYSCFG->EXTICR
-    // EXTI0 ← PA0
-    SYSCFG->EXTICR[0] &= ~(0xFu << 0);
-    // EXTI1 ← PA1
-    SYSCFG->EXTICR[0] &= ~(0xFu << 4);
-    // EXTI4 ← PA4
-    SYSCFG->EXTICR[1] &= ~(0xFu << 0);
-    // EXTI6 ← PA6
-    SYSCFG->EXTICR[1] &= ~(0xFu << 8);
-    // EXTI7 ← PA7
-    SYSCFG->EXTICR[1] &= ~(0xFu << 12);
-    // EXTI12 ← PC12
-    SYSCFG->EXTICR[3] &= ~(0xFu << 0);
-    SYSCFG->EXTICR[3] |=  (0x2u << 0); // 0010 = Port C
+    // Mapeos
+    // EXTI0 <- PA0; EXTI1 <- PA1
+    SYSCFG->EXTICR[0] &= ~(0xFu<<0);  // PA0
+    SYSCFG->EXTICR[0] &= ~(0xFu<<4);  // PA1
+    // EXTI4 <- PA4; EXTI6 <- PA6; EXTI7 <- PA7
+    SYSCFG->EXTICR[1] &= ~(0xFu<<0);  // PA4
+    SYSCFG->EXTICR[1] &= ~(0xFu<<8);  // PA6
+    SYSCFG->EXTICR[1] &= ~(0xFu<<12); // PA7
+    // EXTI12 <- PC12 (0010)
+    SYSCFG->EXTICR[3] = (SYSCFG->EXTICR[3] & ~(0xFu<<0)) | (0x2u<<0);
+    // EXTI13 <- PC13 (0010)
+    SYSCFG->EXTICR[3] = (SYSCFG->EXTICR[3] & ~(0xFu<<4)) | (0x2u<<4);
 
-    // Unmask
-    EXTI->IMR  |= (1u<<0) | (1u<<1) | (1u<<4) | (1u<<6) | (1u<<7) | (1u<<12);
-    // Falling edge
-    EXTI->FTSR |= (1u<<0) | (1u<<1) | (1u<<4) | (1u<<6) | (1u<<7) | (1u<<12);
-    // (opcional) limpiar pendientes
-    EXTI->PR   |= (1u<<0) | (1u<<1) | (1u<<4) | (1u<<6) | (1u<<7) | (1u<<12);
+    // Unmask + flanco bajada
+    EXTI->IMR  |= (1u<<0)|(1u<<1)|(1u<<4)|(1u<<6)|(1u<<7)|(1u<<12)|(1u<<13);
+    EXTI->FTSR |= (1u<<0)|(1u<<1)|(1u<<4)|(1u<<6)|(1u<<7)|(1u<<12)|(1u<<13);
+    EXTI->PR    = (1u<<0)|(1u<<1)|(1u<<4)|(1u<<6)|(1u<<7)|(1u<<12)|(1u<<13);
 
-    // NVIC para EXTI: 0-1, 2-3, 4-15
-    NVIC_SetPriority(EXTI0_1_IRQn, 1);
-    NVIC_SetPriority(EXTI4_15_IRQn, 1);
     NVIC_EnableIRQ(EXTI0_1_IRQn);
     NVIC_EnableIRQ(EXTI4_15_IRQn);
 
     /* =========================
-     * 5) TIMERS
+     * 6) TIMERS
      * ========================= */
-
-    // TIM21 @ 1 kHz → multiplex 7-seg + keypad scan
-    RCC->APB2ENR |= (1u<<2);        // TIM21
-    TIM21->PSC = 16000 - 1;         // 16MHz/16000 = 1 kHz tick
-    TIM21->ARR = 1 - 1;             // Update cada 1 tick → 1 kHz
-    TIM21->DIER |= (1u<<0);         // UIE
-    NVIC_SetPriority(TIM21_IRQn, 2);
+    // TIM21 @ 1kHz
+    RCC->APB2ENR |= (1u<<2);
+    TIM21->CR1 = 0;
+    TIM21->PSC = 16000-1;  // 1kHz
+    TIM21->ARR = 1-1;
+    TIM21->EGR = 1;
+    TIM21->SR  = 0;
+    TIM21->DIER = 1;
     NVIC_EnableIRQ(TIM21_IRQn);
-    TIM21->CR1 |= (1u<<0);
+    TIM21->CR1 |= 1;
 
-    // TIM22 @ 100 Hz → animación + lógica elevador + LCD update
-    RCC->APB2ENR |= (1u<<5);        // TIM22
-    TIM22->PSC = 16000 - 1;         // 1 kHz base
-    TIM22->ARR = 10 - 1;            // 100 Hz
-    TIM22->DIER |= (1u<<0);
-    NVIC_SetPriority(TIM22_IRQn, 3);
+    // TIM22 @ 100Hz
+    RCC->APB2ENR |= (1u<<5);
+    TIM22->CR1 = 0;
+    TIM22->PSC = 16000-1;  // 1kHz
+    TIM22->ARR = 10-1;     // 100Hz
+    TIM22->EGR = 1;
+    TIM22->SR  = 0;
+    TIM22->DIER = 1;
     NVIC_EnableIRQ(TIM22_IRQn);
-    TIM22->CR1 |= (1u<<0);
+    TIM22->CR1 |= 1;
 
-    // TIM2 @ 1 kHz → motores + buzzer
-    RCC->APB1ENR |= (1u<<0);        // TIM2
-    TIM2->PSC = 16000 - 1;          // 1 kHz
-    TIM2->ARR = 1 - 1;              // 1 kHz exacto
-    TIM2->DIER |= (1u<<0);
-    NVIC_SetPriority(TIM2_IRQn, 2);
+    // TIM2 @ 1kHz
+    RCC->APB1ENR |= (1u<<0);
+    TIM2->CR1 = 0;
+    TIM2->PSC = 16000-1;
+    TIM2->ARR = 1-1;
+    TIM2->EGR = 1;
+    TIM2->SR  = 0;
+    TIM2->DIER = 1;
     NVIC_EnableIRQ(TIM2_IRQn);
-    TIM2->CR1 |= (1u<<0);
+    TIM2->CR1 |= 1;
 
     /* =========================
-     * 6) Estados iniciales seguros
+     * 7) Estados iniciales y LCD
      * ========================= */
-    // Apaga segmentos y dígitos
-    GPIOB->BSRR = (0x3Fu << 16);
-    GPIOC->BSRR = (0x0Fu << 16);
-    // Motores OFF
+    GPIOB->BSRR = (0x3Fu << 16);  // segmentos off
+    GPIOC->BSRR = 0x0F;           // dígitos off
     GPIOB->BSRR = (0xFu << (12+16));
     GPIOC->BSRR = (0xFu << (8+16));
-    // Buzzer OFF
     GPIOA->BSRR = (1u << (8+16));
-    // LEDs OFF
     GPIOB->BSRR = ((1u<<6)|(1u<<7)|(1u<<8)) << 16;
 
+    // Inicializa LCD (ya hay clock GPIO y SYSCLK=16MHz)
+    lcd_init();
+    lcd_cmd(0x80);
+    escribir_texto_lcd("Hola LCD");
+
+    // Habilita IRQ globales al final
     __enable_irq();
 }
+
 
 // -x-x-x-x- Main e Init -x-x-x-x-
 
 int main(void) {
     // Inicializaciones de periféricos
-    SystemInit();
+    System_Init();
 
     while (1) {
     }
@@ -248,43 +278,79 @@ int main(void) {
 // -x-x-x-x-x- Funciones Interrupciones -x-x-x-x-
 void TIM21_IRQHandler(void)
 {
-    // 1 kHz: multiplex + keypad scan
-    isr_display_digits_time_multiplexing();
-    isr_keypad_read();
-    TIM21->SR &= ~1u;
+    if (TIM21->SR & 1u) {
+        // heartbeat en PB6
+        GPIOB->ODR ^= (1u<<6);
+        isr_display_digits_time_multiplexing(); // lo tuyo
+        TIM21->SR = 0;
+    }
 }
 
+// TIM22: 100 Hz (animación + lógica + LCD)
 void TIM22_IRQHandler(void)
 {
-    // 100 Hz: animación flecha + lógica elevador + LCD update
-    isr_display_animation();
-    isr_elevator_logic();
-    isr_lcd_update();
-    TIM22->SR &= ~1u;
+    if (TIM22->SR & 1u) {
+        isr_display_animation();
+        isr_elevator_logic();
+        isr_lcd_update();
+        TIM22->SR = 0;    // <- limpiar UIF
+    }
 }
 
+// TIM2: 1 kHz (motores + buzzer)
 void TIM2_IRQHandler(void)
 {
-    // 1 kHz: motores + buzzer
-    isr_elevator_motor_movement();
-    isr_door_motor_movement();
-    isr_buzzer_beep();
-    TIM2->SR &= ~1u;
+    if (TIM2->SR & 1u) {
+        isr_elevator_motor_movement();
+        isr_door_motor_movement();
+        isr_buzzer_beep();
+        TIM2->SR = 0;     // <- limpiar UIF
+    }
 }
 
 // EXTI: limpia PR y despacha si necesitas colas/banderas
+static inline void _debounce_us(volatile int n){ while(n--) __asm__("nop"); }
 void EXTI0_1_IRQHandler(void)
 {
-    if (EXTI->PR & (1u<<0)) { /* keypad col PA0 */ EXTI->PR |= (1u<<0); }
-    if (EXTI->PR & (1u<<1)) { /* keypad col PA1 */ EXTI->PR |= (1u<<1); }
+    if (EXTI->PR & (1u<<0)) {
+        GPIOB->ODR ^= (1u<<6);         // TEST: PB6
+        _debounce_us(400);
+        if ((GPIOA->IDR & (1u<<0)) == 0) {
+            if (next_floors[0] == 0) next_floors[0] = 1;
+            else if (next_floors[1] == 0 && next_floors[0] != 1) next_floors[1] = 1;
+            else if (next_floors[2] == 0 && next_floors[1] != 1) next_floors[2] = 1;
+            lcd_update_flag = 1;
+        }
+        EXTI->PR = (1u<<0);            // limpia PR escribiendo 1
+    }
+
+    if (EXTI->PR & (1u<<1)) {
+        GPIOB->ODR ^= (1u<<6);         // TEST: PB6
+        _debounce_us(400);
+        if ((GPIOA->IDR & (1u<<1)) == 0) {
+            if (next_floors[0] == 0) next_floors[0] = 2;
+            else if (next_floors[1] == 0 && next_floors[0] != 2) next_floors[1] = 2;
+            else if (next_floors[2] == 0 && next_floors[1] != 2) next_floors[2] = 2;
+            lcd_update_flag = 1;
+        }
+        EXTI->PR = (1u<<1);
+    }
 }
+
 
 void EXTI4_15_IRQHandler(void)
 {
-    if (EXTI->PR & (1u<<4))  { /* keypad col PA4 */ EXTI->PR |= (1u<<4);  }
-    if (EXTI->PR & (1u<<6))  { push1_button_isr();  EXTI->PR |= (1u<<6);  }
-    if (EXTI->PR & (1u<<7))  { push2_button_isr();  EXTI->PR |= (1u<<7);  }
-    if (EXTI->PR & (1u<<12)) { push3_button_isr();  EXTI->PR |= (1u<<12); }
+    // Botón usuario PC13: parpadea PB7 para ver que entra
+    if (EXTI->PR & (1u<<13)) {
+        GPIOB->ODR ^= (1u<<7);
+        EXTI->PR = (1u<<13); // limpiar escribiendo 1
+    }
+
+    // Resto de tu despacho (keypad y pushes) tal como lo tienes:
+    if (EXTI->PR & (1u<<4))  { /* ... */ EXTI->PR = (1u<<4); }
+    if (EXTI->PR & (1u<<6))  { push1_button_isr(); EXTI->PR = (1u<<6); }
+    if (EXTI->PR & (1u<<7))  { push2_button_isr(); EXTI->PR = (1u<<7); }
+    if (EXTI->PR & (1u<<12)) { push3_button_isr(); EXTI->PR = (1u<<12); }
 }
 
 // -x-x-x-x- Funciones Motor Elevador -x-x-x-x-
@@ -293,21 +359,21 @@ void first_to_second_floor(void) {
     elevator_motor_right_fsm = 1;
     elevator_motor_right_counter = 64;
     elevator_moving = 1;
-    usart2_write_line("Piso: 1 a 2.");
+    //usart2_write_line("Piso: 1 a 2.");
 }
 
 void second_to_third_floor(void) {
     elevator_motor_right_fsm = 1;
     elevator_motor_right_counter = 64;
     elevator_moving = 1;
-    usart2_write_line("Piso: 2 a 3.");
+    //usart2_write_line("Piso: 2 a 3.");
 }
 
 void first_to_third_floor(void) {
     elevator_motor_right_fsm = 1;
     elevator_motor_right_counter = 128;
     elevator_moving = 1;
-    usart2_write_line("Piso: 1 a 3.");
+    //usart2_write_line("Piso: 1 a 3.");
 }
 
 // abajo
@@ -315,19 +381,19 @@ void third_to_second_floor(void) {
     elevator_motor_left_fsm = 1;
     elevator_motor_left_counter = 64;
     elevator_moving = 2;
-    usart2_write_line("Piso: 3 a 2.");
+    //usart2_write_line("Piso: 3 a 2.");
 }
 void second_to_first_floor(void) {
     elevator_motor_left_fsm = 1;
     elevator_motor_left_counter = 64;
     elevator_moving = 2;
-    usart2_write_line("Piso: 2 a 1.");
+    //usart2_write_line("Piso: 2 a 1.");
 }
 void third_to_first_floor(void) {
     elevator_motor_left_fsm = 1;
     elevator_motor_left_counter = 128;
     elevator_moving = 2;
-    usart2_write_line("Piso: 3 a 1.");
+    //usart2_write_line("Piso: 3 a 1.");
 }
 
 void buzzer_beep(void) {
@@ -335,7 +401,7 @@ void buzzer_beep(void) {
         buzzer_beep_counter = 1000; // Duración del beep en ms
         buzzer_flag = 1; // Beep al llegar al piso
         buzzer_last_state = 0; // Duración del beep en ms
-        usart2_write_line("Buzzer sonando...");
+        //usart2_write_line("Buzzer sonando...");
 }
 
 void isr_buzzer_beep(void) {
@@ -355,7 +421,7 @@ void isr_buzzer_beep(void) {
     }
 }
 
-void isr_elevator_motor_movement() {
+void isr_elevator_motor_movement(void) {
     switch (elevator_moving) {
         case 0: // Detenido
             // No hacer nada
@@ -364,7 +430,7 @@ void isr_elevator_motor_movement() {
             elevator_motor_right_counter--;
             strcpy(status_message, "Subiendo...");
             lcd_update_flag = 1;
-            usart2_write_line("Subiendo...");
+            //usart2_write_line("Subiendo...");
 
             if (elevator_motor_right_counter == 0) {
                 move_queue(); // Mover la cola de pisos
@@ -399,7 +465,7 @@ void isr_elevator_motor_movement() {
             elevator_motor_left_counter--;
             strcpy(status_message, "Bajando...");
             lcd_update_flag = 1;
-            usart2_write_line("Bajando...");
+            //usart2_write_line("Bajando...");
 
             if (elevator_motor_left_counter == 0) {
                 move_queue(); // Mover la cola de pisos
@@ -444,7 +510,7 @@ void door_open(void) {
     door_moving = 1; // Cambiar estado a abriendo
     strcpy(status_message, "Abriendo puerta");
     lcd_update_flag = 1;
-    usart2_write_line("Abriendo puerta");
+    //usart2_write_line("Abriendo puerta");
 }
 // derecha
 void door_close(void) {
@@ -453,10 +519,10 @@ void door_close(void) {
     door_moving = 3; // Cambiar estado a cerrando
     strcpy(status_message, "Cerrando puerta");
     lcd_update_flag = 1;
-    usart2_write_line("Cerrando puerta");
+    //usart2_write_line("Cerrando puerta");
 }
 
-void isr_door_motor_movement() {
+void isr_door_motor_movement(void) {
         switch (door_moving) {
             case 0: // Detenido
                 break;
@@ -495,7 +561,7 @@ void isr_door_motor_movement() {
             case 2: // Esperando
                 door_motor_waiting_counter--;
                 strcpy(status_message, "Esperando...");
-                usart2_write_line("Esperando con puerta abierta.");
+                //usart2_write_line("Esperando con puerta abierta.");
                 lcd_update_flag = 1;
                 if (door_motor_waiting_counter == 0) {
                     door_close(); // Iniciar cierre de puerta
@@ -507,10 +573,10 @@ void isr_door_motor_movement() {
                 if (door_motor_left_counter == 0) {
                     door_moving = 0; // Cambiar a detenido
                     strcpy(status_message, "Esperando...");
-                    usart2_write_line("Elevador en espera.");
+                    //usart2_write_line("Elevador en espera.");
                     lcd_update_flag = 1;
                 }
-                GPIOC->BSRR |= (0x0F << (8+16)); // Apagar PC8–PC11
+                GPIOC->BSRR = (0x0F << (8+16)); // Apagar PC8–PC11
                 switch(door_motor_left_fsm) {
                     case 1:
                         GPIOC->BSRR |= (0b0001 << 8); // Activar bobina 1
@@ -540,53 +606,53 @@ void isr_door_motor_movement() {
 
 // -x-x-x-x- Botones Llamar Piso -x-x-x-x-
 
-void push1_button_isr() {
+void push1_button_isr(void) {
     // Agregar la solicitud del piso 1 a la cola
     if (next_floors[0] == 0) {
         next_floors[0] = 1;
-        usart2_write_line("Piso 1 solicitado desde push button.");
+        //usart2_write_line("Piso 1 solicitado desde push button.");
         GPIOB->BSRR |= (1 << 6); // Encender led piso 1
     } else if (next_floors[1] == 0 && next_floors[0] != 1) {
         next_floors[1] = 1;
-        usart2_write_line("Piso 1 solicitado desde push button.");
+        //usart2_write_line("Piso 1 solicitado desde push button.");
         GPIOB->BSRR |= (1 << 6); // Encender led piso 1
     } else if (next_floors[2] == 0 && next_floors[1] != 1) {
         next_floors[2] = 1;
-        usart2_write_line("Piso 1 solicitado desde push button.");
+        //usart2_write_line("Piso 1 solicitado desde push button.");
         GPIOB->BSRR |= (1 << 6); // Encender led piso 1
     }
 }
 
-void push2_button_isr() {
+void push2_button_isr(void) {
     // Agregar la solicitud del piso 2 a la cola
     if (next_floors[0] == 0) {
         next_floors[0] = 2;
-        usart2_write_line("Piso 2 solicitado desde push button.");
+        //usart2_write_line("Piso 2 solicitado desde push button.");
         GPIOB->BSRR |= (1 << 7); // Encender led piso 2
     } else if (next_floors[1] == 0 && next_floors[0] != 2) {
         next_floors[1] = 2;
-        usart2_write_line("Piso 2 solicitado desde push button.");
+        //usart2_write_line("Piso 2 solicitado desde push button.");
         GPIOB->BSRR |= (1 << 7); // Encender led piso 2
     } else if (next_floors[2] == 0 && next_floors[1] != 2) {
         next_floors[2] = 2;
-        usart2_write_line("Piso 2 solicitado desde push button.");
+        //usart2_write_line("Piso 2 solicitado desde push button.");
         GPIOB->BSRR |= (1 << 7); // Encender led piso 2
     }
 }
 
-void push3_button_isr() {
+void push3_button_isr(void) {
     // Agregar la solicitud del piso 3 a la cola
     if (next_floors[0] == 0) {
         next_floors[0] = 3;
-        usart2_write_line("Piso 3 solicitado desde push button.");
+        //usart2_write_line("Piso 3 solicitado desde push button.");
         GPIOB->BSRR |= (1 << 8); // Encender led piso 3
     } else if (next_floors[1] == 0 && next_floors[0] != 3) {
         next_floors[1] = 3;
-        usart2_write_line("Piso 3 solicitado desde push button.");
+        //usart2_write_line("Piso 3 solicitado desde push button.");
         GPIOB->BSRR |= (1 << 8); // Encender led piso 3
     } else if (next_floors[2] == 0 && next_floors[1] != 3) {
         next_floors[2] = 3;
-        usart2_write_line("Piso 3 solicitado desde push button.");
+        //usart2_write_line("Piso 3 solicitado desde push button.");
         GPIOB->BSRR |= (1 << 8); // Encender led piso 3
     }
 }
@@ -658,13 +724,13 @@ void move_queue(void) {
         char texto_concatenado[64];
         elevator_floor = next_floors[0];
     sprintf(texto_concatenado, "Llego al piso %u", elevator_floor);
-    usart2_write_line(texto_concatenado);
+    //usart2_write_line(texto_concatenado);
     // Desplazar la cola de pisos hacia adelante
     next_floors[0] = next_floors[1];
     next_floors[1] = next_floors[2];
     next_floors[2] = 0;
     sprintf(texto_concatenado, "Nueva cola: %u,%u,%u", next_floors[0], next_floors[1], next_floors[2]);
-    usart2_write_line(texto_concatenado);
+    //usart2_write_line(texto_concatenado);
     // Apagar led del piso al que llegó
     switch (elevator_floor) {
         case 1:
@@ -683,7 +749,7 @@ void move_queue(void) {
 }
 
 // -x-x-x-x- Funciones Displays -x-x-x-x-
-    
+
 uint8_t display_digits(uint8_t digit) {
     switch(digit) {
         case 1:
@@ -701,46 +767,54 @@ volatile uint8_t display_animation_bits = 0b000000;
 
 // 7-seg: leds = a,b,c,d,e,g → PB0–PB5
 //        displays = PC0–PC3
-void isr_display_digits_time_multiplexing() {
+void isr_display_digits_time_multiplexing(void) {
     switch (display_fsm) {
+        // 7-seg: segmentos PB0..PB5 activos en HIGH (correcto)
+        // dígitos PC0..PC3: activo en LOW (común cátodo)
+
         case 0:
-            GPIOB->BSRR = (0x3F << 16); // Reset display pines PB0-PB5
-            GPIOC->BSRR = (0xF << 16); // Reset display pines de PC0-PC3
+            GPIOB->BSRR = (0x3F << 16);          // limpia segmentos
+            GPIOC->BSRR = 0xF;                   // dígitos OFF (HIGH en PC0..PC3)
             GPIOB->BSRR = (display_digits(elevator_floor) << 0);
-            GPIOC->BSRR = (1 << 0); // Encender display 1
-            display_fsm++;
+            GPIOC->BSRR = (1u << (0 + 16));      // dígito 1 ON (LOW)
+            display_fsm = 1;
             break;
+
         case 1:
-            GPIOB->BSRR = (0x3F << 16); // Reset display pines PB0-PB5
-            GPIOC->BSRR = (0xF << 16); // Reset display pines de PC0-PC3
+            GPIOB->BSRR = (0x3F << 16);
+            GPIOC->BSRR = 0xF;                   // todos OFF
             GPIOB->BSRR = (display_animation_bits << 0);
-            GPIOC->BSRR = (1 << 1); // Encender display 2
-            display_fsm++;
+            GPIOC->BSRR = (1u << (1 + 16));      // dígito 2 ON
+            display_fsm = 2;
             break;
+
         case 2:
-            GPIOB->BSRR = (0x3F << 16); // Reset display pines PB0-PB5
-            GPIOC->BSRR = (0xF << 16); // Reset display pines de PC0-PC3
-            GPIOB->BSRR = (0b000000 << 0); // Apagado
-            GPIOC->BSRR = (1 << 2); // Encender display 3
-            display_fsm++;
+            GPIOB->BSRR = (0x3F << 16);
+            GPIOC->BSRR = 0xF;                   // todos OFF
+            // aquí quieres apagado:
+            // (no escribas segmentos)
+            GPIOC->BSRR = (1u << (2 + 16));      // dígito 3 ON (pero sin segmentos → se ve apagado)
+            display_fsm = 3;
             break;
+
         case 3:
-            GPIOB->BSRR = (0x3F << 16); // Reset display pines PB0-PB5
-            GPIOC->BSRR = (0xF << 16); // Reset display pines de PC0-PC3
-            GPIOB->BSRR = (0b000000 << 0); // Apagado
-            GPIOC->BSRR = (1 << 3); // Encender display 4
-            display_fsm++;
+            GPIOB->BSRR = (0x3F << 16);
+            GPIOC->BSRR = 0xF;                   // todos OFF
+            GPIOC->BSRR = (1u << (3 + 16));      // dígito 4 ON (sin segmentos)
+            display_fsm = 0;
             break;
+
         default:
-        GPIOB->BSRR = (0x3F << 16); // Reset display pines PB0-PB5
-        GPIOC->BSRR = (0xF << 16); // Reset display pines de PC0-PC3
-        display_fsm = 0;
-        break;
+            GPIOB->BSRR = (0x3F << 16);
+            GPIOC->BSRR = 0xF;                   // todos OFF
+            display_fsm = 0;
+            break;
+
     }
 }
 volatile uint8_t display_animation_fsm = 0;
 
-void isr_display_animation() {
+void isr_display_animation(void) {
     switch(display_animation_fsm) {
         case 0:
             display_animation_fsm = 1;
@@ -792,7 +866,7 @@ void isr_display_animation() {
 //         fila (común) = PA15 → salida
 
 volatile uint8_t fsm_keypad = 0;
-void isr_keypad_read() {
+void isr_keypad_read(void) {
     switch(fsm_keypad) {
         case 0:
             GPIOA->ODR |= (0b10011 << 0);  // "reset columnas" (tu estilo)
@@ -800,13 +874,13 @@ void isr_keypad_read() {
             if ((GPIOA->IDR & (1 << 15)) == 0) {
                 if (next_floors[0] == 0) {
                     next_floors[0] = 1;
-                    usart2_write_line("Piso 1 solicitado desde keypad.");
+                    //usart2_write_line("Piso 1 solicitado desde keypad.");
                 } else if (next_floors[1] == 0 && next_floors[0] != 1) {
                     next_floors[1] = 1;
-                    usart2_write_line("Piso 1 solicitado desde keypad.");
+                    //usart2_write_line("Piso 1 solicitado desde keypad.");
                 } else if (next_floors[2] == 0 && next_floors[1] != 1) {
                     next_floors[2] = 1;
-                    usart2_write_line("Piso 1 solicitado desde keypad.");
+                    //usart2_write_line("Piso 1 solicitado desde keypad.");
                 }
             }
             fsm_keypad = 1;
@@ -818,13 +892,13 @@ void isr_keypad_read() {
             if ((GPIOA->IDR & (1 << 15)) == 0) {
                 if (next_floors[0] == 0) {
                     next_floors[0] = 2;
-                    usart2_write_line("Piso 2 solicitado desde keypad.");
+                    //usart2_write_line("Piso 2 solicitado desde keypad.");
                 } else if (next_floors[1] == 0 && next_floors[0] != 2) {
                     next_floors[1] = 2;
-                    usart2_write_line("Piso 2 solicitado desde keypad.");
+                    //usart2_write_line("Piso 2 solicitado desde keypad.");
                 } else if (next_floors[2] == 0 && next_floors[1] != 2) {
                     next_floors[2] = 2;
-                    usart2_write_line("Piso 2 solicitado desde keypad.");
+                    //usart2_write_line("Piso 2 solicitado desde keypad.");
                 }
             }
             fsm_keypad = 2;
@@ -836,13 +910,13 @@ void isr_keypad_read() {
             if ((GPIOA->IDR & (1 << 15)) == 0) {
                 if (next_floors[0] == 0) {
                     next_floors[0] = 3;
-                    usart2_write_line("Piso 3 solicitado desde keypad.");
+                    //usart2_write_line("Piso 3 solicitado desde keypad.");
                 } else if (next_floors[1] == 0 && next_floors[0] != 3) {
                     next_floors[1] = 3;
-                    usart2_write_line("Piso 3 solicitado desde keypad.");
+                    //usart2_write_line("Piso 3 solicitado desde keypad.");
                 } else if (next_floors[2] == 0 && next_floors[1] != 3) {
                     next_floors[2] = 3;
-                    usart2_write_line("Piso 3 solicitado desde keypad.");
+                    //usart2_write_line("Piso 3 solicitado desde keypad.");
                 }
             }
             fsm_keypad = 0;
@@ -853,34 +927,38 @@ void isr_keypad_read() {
 
 // -x-x-x-x-x- funciones LCD -x-x-x-x-x-
 
+// Pequeño delay por software para cumplir tiempos del HD44780
+static inline void tiny_delay(void){
+    // ~2–5 us según reloj/optimizaciones (suficiente para E y entre nibbles)
+    for(volatile int i = 0; i < 300; i++) __asm__("nop");
+}
+
+
 void lcd_init(void){
     // RS=0, E=0, D4..D7=0
-    GPIOB->BSRR = (1u<<(11+16)) | (1u<<(10+16));        // RS=0, E=0
-    GPIOC->BSRR = ((0x0Fu<<4) << 16);                  // limpia PC4..PC7
-    timer_loop(8); // >15ms
+    GPIOB->BSRR = (1u<<(11+16)) | (1u<<(10+16));
+    GPIOC->BSRR = ((0x0Fu<<4) << 16);
+    // >15ms tras power-on
+    for(int i=0;i<12000;i++) __asm__("nop");
 
-    // Modo 4-bit wakeup (tres veces 0x3 en nibble alto, luego 0x2)
-    lcd_send_nibble(0x3);
-    lcd_send_nibble(0x3);
-    lcd_send_nibble(0x3);
-    lcd_send_nibble(0x2); // entra 4-bit
+    // wakeup 4-bit: 0x3,0x3,0x3,0x2 (nibble alto)
+    lcd_send_nibble(0x3); for(int i=0;i<3000;i++) __asm__("nop");
+    lcd_send_nibble(0x3); for(int i=0;i<3000;i++) __asm__("nop");
+    lcd_send_nibble(0x3); for(int i=0;i<3000;i++) __asm__("nop");
+    lcd_send_nibble(0x2); for(int i=0;i<3000;i++) __asm__("nop");
 
-    // Function set: 4-bit, 2 lines, 5x8
-    lcd_cmd(0x28);
-    // Display ON, cursor OFF, blink OFF
-    lcd_cmd(0x0C);
-    // Clear
-    lcd_cmd(0x01);
-    timer_loop(8);
-    // Entry mode: increment, no shift
-    lcd_cmd(0x06);
+    lcd_cmd(0x28); // 4-bit, 2L
+    lcd_cmd(0x0C); // display on
+    lcd_cmd(0x01); // clear (necesita pausa larga)
+    for(int i=0;i<12000;i++) __asm__("nop");
+    lcd_cmd(0x06); // entry mode
 }
 
 void lcd_pulso_E(void){
-    GPIOB->BSRR = (1u<<10);          // E=1 (PB10)
-    timer_loop(8);
-    GPIOB->BSRR = (1u<<(10+16));     // E=0 (PB10)
-    timer_loop(8);
+    GPIOB->BSRR = (1u<<10);          // E=1
+    tiny_delay();
+    GPIOB->BSRR = (1u<<(10+16));     // E=0
+    tiny_delay();
 }
 
 // caracteres
@@ -892,35 +970,26 @@ void escribir_texto_lcd(char* mensaje) {
     }
 }
 
-void escribir_caracter_lcd(uint8_t caracter){
-    uint8_t alto = (caracter >> 4) & 0x0F;
-    uint8_t bajo =  caracter        & 0x0F;
-
-    lcd_send_nibble(alto);
-    lcd_send_nibble(bajo);
-    timer_loop(8);
+void escribir_caracter_lcd(uint8_t c){
+    GPIOB->BSRR = (1u<<11);          // RS=1
+    lcd_send_nibble((c>>4)&0x0F);    tiny_delay();
+    lcd_send_nibble(c & 0x0F);       tiny_delay();
 }
 
-void lcd_send_nibble(uint8_t nibble){ // nib=0..15 en PC4..PC7 → D4..D7
-    // limpia PC4..PC7
-    GPIOC->BSRR = ((0x0F << 4) << 16);
-    // coloca nibble en PC4..PC7
-    GPIOC->BSRR = (uint32_t)(nibble & 0x0F) << 4;
+void lcd_send_nibble(uint8_t nibble){
+    GPIOC->BSRR = ((0x0F << 4) << 16);             // limpia PC4..PC7
+    GPIOC->BSRR = (uint32_t)(nibble & 0x0F) << 4;  // pone nibble
     lcd_pulso_E();
 }
 
 // comandos
 void lcd_cmd(uint8_t cmd){
-    GPIOB->BSRR = (1u<<(11+16));     // RS=0 (comando) en PB11
-    uint8_t alto = (cmd >> 4) & 0x0F;
-    uint8_t bajo =  cmd        & 0x0F;
-
-    lcd_send_nibble(alto);
-    lcd_send_nibble(bajo);
-    timer_loop(8);
+    GPIOB->BSRR = (1u<<(11+16));     // RS=0
+    lcd_send_nibble((cmd>>4)&0x0F);  tiny_delay();
+    lcd_send_nibble(cmd & 0x0F);     tiny_delay();
 }
 
-// esta funcion debe ser llamada cada cierto tiempo con una interrupcion de timer 
+// esta funcion debe ser llamada cada cierto tiempo con una interrupcion de timer
 void isr_lcd_update(void) {
     if (lcd_update_flag) {
         lcd_cmd(0x01); // limpiar
@@ -935,7 +1004,7 @@ void isr_lcd_update(void) {
 
 // -x-x-x-x- Funciones USART -x-x-x-x-
 
-static inline void usart2_init(uint32_t baud)
+void usart2_init(uint32_t baud)
 {
     RCC->IOPENR  |= (1u<<0);          // GPIOA
     RCC->APB1ENR |= (1u<<17);         // USART2
@@ -969,19 +1038,19 @@ static inline void usart2_init(uint32_t baud)
     USART2->CR1 |= (1u<<0);                  // UE (USART enable)
 }
 
-static inline void usart2_putc(char c)
+void usart2_putc(char c)
 {
     // espera a que TXE=1 (TDR vacío)
     while(!(USART2->ISR & (1u<<7)));         // TXE
     USART2->TDR = (uint8_t)c;
 }
 
-static inline void usart2_write(const char *s)
+void usart2_write(const char *s)
 {
     while(*s) usart2_putc(*s++);
 }
 
-static inline void usart2_write_line(const char *s)
+void usart2_write_line(const char *s)
 {
     usart2_write(s);
     usart2_write("\r\n");
