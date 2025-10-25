@@ -114,65 +114,69 @@ volatile uint8_t led_test = 0;
     // -x-x-x-x- Init -x-x-x-x-
 void System_Init(void)
 {
-    // --- desactiva SysTick por si el template lo dejó activo
+    /* ---------- SysTick OFF (por si el template lo dejó activo) ---------- */
     SysTick->CTRL = 0; SysTick->LOAD = 0; SysTick->VAL = 0;
 
-    /* =========================
-     * 1) Reloj del sistema: HSI16 @16MHz
-     * ========================= */
-    RCC->CR   |= (1u << 0);                           // HSI16 ON
-    while(!(RCC->CR & (1u << 1)));                    // HSIRDY
-    RCC->CFGR &= ~((0x3u<<0) | (0xFu<<4) | (0x7u<<8));// limpia SW/HPRE/PPRE
-    RCC->CFGR |=  (0x1u<<0);                          // SW = 01 (HSI16)
-    while(((RCC->CFGR >> 2) & 0x3u) != 0x1u);         // espera SWS=01
-    RCC->CR   &= ~(1u<<8);                            // MSION = 0 (apaga MSI)
+    /* ---------- Reloj: HSI16 como SYSCLK, sin prescalers; MSI/PLL OFF ---------- */
+    RCC->CR   |=  (1u << 0);                             // HSI16 ON
+    while(!(RCC->CR & (1u << 1)));                       // HSIRDY
+    RCC->CFGR &= ~((0x3u<<0) | (0xFu<<4) | (0x7u<<8));   // limpia SW, HPRE, PPRE
+    RCC->CFGR |=  (0x1u << 0);                           // SW=01 (HSI16)
+    while(((RCC->CFGR >> 2) & 0x3u) != 0x1u);            // espera SWS=01
+    RCC->CR   &= ~(1u << 8);                             // MSION=0
+    RCC->CR   &= ~(1u << 24);                            // PLLON=0
+    FLASH->ACR |=  (1u<<8);                              // PRFTEN
+    FLASH->ACR &= ~(1u<<0);                              // LATENCY=0 (16MHz)
+
+    /* ---------- Clocks periféricos base ---------- */
+    RCC->IOPENR  |= (1u<<0) | (1u<<1) | (1u<<2);         // GPIOA/B/C
+    RCC->APB2ENR |= (1u<<0);                             // SYSCFG
 
     /* =========================
-     * 2) Clocks periféricos
+     *  GPIO (tus pines)
      * ========================= */
-    RCC->IOPENR  |= (1u<<0) | (1u<<1) | (1u<<2);      // GPIOA/B/C
-    RCC->APB2ENR |= (1u<<0);                          // SYSCFG
 
-    /* =========================
-     * 3) GPIO
-     * ========================= */
-    // 7-seg PB0..PB5
+    // 7-seg: PB0..PB5 salida
     GPIOB->MODER &= ~0x00000FFFu;
     GPIOB->MODER |=  0x00000555u;
 
-    // Displays PC0..PC3
+    // 7-seg: PC0..PC3 salida
     GPIOC->MODER &= ~0x000000FFu;
     GPIOC->MODER |=  0x00000055u;
 
-    // LCD PC4..PC7, PB10 (E), PB11 (RS)
+    // LCD: PC4..PC7 salida
     GPIOC->MODER &= ~0x0000FF00u;
     GPIOC->MODER |=  0x00005500u;
+
+    // LCD: PB10 (E) y PB11 (RS) salida
     GPIOB->MODER &= ~0x00F00000u;
     GPIOB->MODER |=  0x00500000u;
 
-    // Motores PB12..PB15, PC8..PC11
+    // Motor elevador: PB12..PB15 salida
     GPIOB->MODER &= ~0xFF000000u;
     GPIOB->MODER |=  0x55000000u;
+
+    // Motor puerta: PC8..PC11 salida
     GPIOC->MODER &= ~0x00FF0000u;
     GPIOC->MODER |=  0x00550000u;
 
-    // Buzzer PA8
+    // Buzzer: PA8 salida
     GPIOA->MODER &= ~0x00030000u;
     GPIOA->MODER |=  0x00010000u;
 
-    // LEDs PB6..PB8
+    // LEDs PB6..PB8 salida
     GPIOB->MODER &= ~0x0003F000u;
     GPIOB->MODER |=  0x00015000u;
 
-    // Keypad: PA0,PA1,PA4 input pull-up; PA15 output (fila)
+    // Keypad: PA0,PA1,PA4 entradas pull-up; PA15 salida (fila) = LOW
     GPIOA->MODER &= ~((0x3u<<(0*2)) | (0x3u<<(1*2)) | (0x3u<<(4*2)));
     GPIOA->PUPDR &= ~((0x3u<<(0*2)) | (0x3u<<(1*2)) | (0x3u<<(4*2)));
-    GPIOA->PUPDR |=  ((0x1u<<(0*2)) | (0x1u<<(1*2)) | (0x1u<<(4*2)));
+    GPIOA->PUPDR |=  ((0x1u<<(0*2)) | (0x1u<<(1*2)) | (0x1u<<(4*2))); // pull-up
     GPIOA->MODER &= ~(0x3u << (15*2));
-    GPIOA->MODER |=  (0x1u << (15*2));
-    GPIOA->BSRR = (1u << (15 + 16));  // PA15 = LOW
+    GPIOA->MODER |=  (0x1u << (15*2)); // PA15 salida
+    GPIOA->BSRR   =  (1u << (15 + 16)); // PA15=0
 
-    // Botones PA6,PA7,PC12 input pull-up
+    // Botones externos: PA6,PA7,PC12 entradas pull-up
     GPIOA->MODER &= ~((0x3u<<(6*2)) | (0x3u<<(7*2)));
     GPIOA->PUPDR &= ~((0x3u<<(6*2)) | (0x3u<<(7*2)));
     GPIOA->PUPDR |=  ((0x1u<<(6*2)) | (0x1u<<(7*2)));
@@ -181,88 +185,99 @@ void System_Init(void)
     GPIOC->PUPDR |=  (0x1u<<(12*2));
 
     /* =========================
-     * 4) USART2 (opcional; a 16MHz)
+     *  USART2 (logs)
      * ========================= */
     usart2_init(115200);
 
     /* =========================
-     * 5) EXTI: keypad y botones (PA0,1,4,6,7; PC12) + botón usuario PC13
+     *  EXTI (orden correcto)
      * ========================= */
-    // Mapeos
-    // EXTI0 <- PA0; EXTI1 <- PA1
-    SYSCFG->EXTICR[0] &= ~(0xFu<<0);  // PA0
-    SYSCFG->EXTICR[0] &= ~(0xFu<<4);  // PA1
-    // EXTI4 <- PA4; EXTI6 <- PA6; EXTI7 <- PA7
-    SYSCFG->EXTICR[1] &= ~(0xFu<<0);  // PA4
-    SYSCFG->EXTICR[1] &= ~(0xFu<<8);  // PA6
-    SYSCFG->EXTICR[1] &= ~(0xFu<<12); // PA7
-    // EXTI12 <- PC12 (0010)
+    // Mapear líneas primero
+    RCC->APB2ENR |= (1u<<0); // SYSCFG
+    // EXTI0<-PA0, EXTI1<-PA1
+    SYSCFG->EXTICR[0] &= ~((0xFu<<0) | (0xFu<<4));
+    // EXTI4<-PA4, EXTI6<-PA6, EXTI7<-PA7
+    SYSCFG->EXTICR[1] &= ~((0xFu<<0) | (0xFu<<8) | (0xFu<<12));
+    // EXTI12<-PC12
     SYSCFG->EXTICR[3] = (SYSCFG->EXTICR[3] & ~(0xFu<<0)) | (0x2u<<0);
-    // EXTI13 <- PC13 (0010)
+    // EXTI13<-PC13 (botón usuario)
     SYSCFG->EXTICR[3] = (SYSCFG->EXTICR[3] & ~(0xFu<<4)) | (0x2u<<4);
+
+    // Limpiar pendientes ANTES
+    EXTI->PR  = (1u<<0)|(1u<<1)|(1u<<4)|(1u<<6)|(1u<<7)|(1u<<12)|(1u<<13);
 
     // Unmask + flanco bajada
     EXTI->IMR  |= (1u<<0)|(1u<<1)|(1u<<4)|(1u<<6)|(1u<<7)|(1u<<12)|(1u<<13);
     EXTI->FTSR |= (1u<<0)|(1u<<1)|(1u<<4)|(1u<<6)|(1u<<7)|(1u<<12)|(1u<<13);
-    EXTI->PR    = (1u<<0)|(1u<<1)|(1u<<4)|(1u<<6)|(1u<<7)|(1u<<12)|(1u<<13);
 
+    // NVIC para EXTI
+    NVIC_ClearPendingIRQ(EXTI0_1_IRQn);
+    NVIC_ClearPendingIRQ(EXTI4_15_IRQn);
     NVIC_EnableIRQ(EXTI0_1_IRQn);
     NVIC_EnableIRQ(EXTI4_15_IRQn);
 
     /* =========================
-     * 6) TIMERS
+     *  TIMERS (higiene: UG, limpiar SR, limpiar NVIC pending)
      * ========================= */
-    // TIM21 @ 1kHz
+
+    // TIM21 @1 kHz (multiplex + keypad/heartbeat)
     RCC->APB2ENR |= (1u<<2);
-    TIM21->CR1 = 0;
-    TIM21->PSC = 16000-1;  // 1kHz
-    TIM21->ARR = 1-1;
-    TIM21->EGR = 1;
-    TIM21->SR  = 0;
-    TIM21->DIER = 1;
+    TIM21->CR1  = 0;
+    TIM21->PSC  = 16000 - 1;    // 16MHz/16000 = 1kHz
+    TIM21->ARR  = 1 - 1;        // update cada 1 tick
+    TIM21->EGR  = 1u;           // UG
+    TIM21->SR   = 0;            // limpia flags
+    TIM21->DIER = 1u;           // UIE
+    NVIC_ClearPendingIRQ(TIM21_IRQn);
     NVIC_EnableIRQ(TIM21_IRQn);
-    TIM21->CR1 |= 1;
+    TIM21->CR1 |= 1u;           // CEN
 
-    // TIM22 @ 100Hz
+    // TIM22 @100 Hz (animación + lógica + LCD)
     RCC->APB2ENR |= (1u<<5);
-    TIM22->CR1 = 0;
-    TIM22->PSC = 16000-1;  // 1kHz
-    TIM22->ARR = 10-1;     // 100Hz
-    TIM22->EGR = 1;
-    TIM22->SR  = 0;
-    TIM22->DIER = 1;
+    TIM22->CR1  = 0;
+    TIM22->PSC  = 16000 - 1;    // 1 kHz base
+    TIM22->ARR  = 10 - 1;       // 100 Hz
+    TIM22->EGR  = 1u;
+    TIM22->SR   = 0;
+    TIM22->DIER = 1u;
+    NVIC_ClearPendingIRQ(TIM22_IRQn);
     NVIC_EnableIRQ(TIM22_IRQn);
-    TIM22->CR1 |= 1;
+    TIM22->CR1 |= 1u;
 
-    // TIM2 @ 1kHz
+    // TIM2 @1 kHz (motores + buzzer)
     RCC->APB1ENR |= (1u<<0);
-    TIM2->CR1 = 0;
-    TIM2->PSC = 16000-1;
-    TIM2->ARR = 1-1;
-    TIM2->EGR = 1;
-    TIM2->SR  = 0;
-    TIM2->DIER = 1;
+    TIM2->CR1  = 0;
+    TIM2->PSC  = 16000 - 1;     // 1 kHz
+    TIM2->ARR  = 1 - 1;         // update por tick
+    TIM2->EGR  = 1u;
+    TIM2->SR   = 0;
+    TIM2->DIER = 1u;
+    NVIC_ClearPendingIRQ(TIM2_IRQn);
     NVIC_EnableIRQ(TIM2_IRQn);
-    TIM2->CR1 |= 1;
+    TIM2->CR1 |= 1u;
 
     /* =========================
-     * 7) Estados iniciales y LCD
+     *  Estados iniciales seguros
      * ========================= */
-    GPIOB->BSRR = (0x3Fu << 16);  // segmentos off
-    GPIOC->BSRR = 0x0F;           // dígitos off
+    // 7-seg off
+    GPIOB->BSRR = (0x3Fu << 16);
+    GPIOC->BSRR = 0x0F;
+    // Motores off
     GPIOB->BSRR = (0xFu << (12+16));
     GPIOC->BSRR = (0xFu << (8+16));
+    // Buzzer off
     GPIOA->BSRR = (1u << (8+16));
+    // LEDs off
     GPIOB->BSRR = ((1u<<6)|(1u<<7)|(1u<<8)) << 16;
 
-    // Inicializa LCD (ya hay clock GPIO y SYSCLK=16MHz)
-    lcd_init();
-    lcd_cmd(0x80);
-    escribir_texto_lcd("Hola LCD");
-
-    // Habilita IRQ globales al final
+    /* ---------- Global IRQ y LCD init (sin delays grandes) ---------- */
     __enable_irq();
+
+    lcd_init();
+    lcd_cmd(0x80);                    // pos 0
+    escribir_texto_lcd("Hola LCD");   // prueba rápida
 }
+
 
 
 // -x-x-x-x- Main e Init -x-x-x-x-
