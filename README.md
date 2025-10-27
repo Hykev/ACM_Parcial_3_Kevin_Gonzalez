@@ -20,8 +20,6 @@ El sistema integra:
 - Visualización en displays 7 segmentos y LCD 16×2.  
 - Comunicación serial (USART2) y buzzer de señalización.
 
-📄 **Documentación completa:** [`Serie1_Elevador_STM32.md`](../Serie_1_Elevador/Serie1_Elevador_STM32.md)
-
 ---
 
 ## 💡 Serie 2 – Implementación de FSM en FPGA (Basys 3)
@@ -33,8 +31,6 @@ El proyecto combina dos módulos principales:
 2. **Reloj 24 h:** Visualizado en los displays 7 segmentos mediante multiplexación temporal.  
 
 Incluye además la descripción del flujo completo de **Vivado**, desde el RTL schematic hasta la generación del bitstream final.
-
-📄 **Documentación completa:** [`Serie2_FSM_FPGA.md`](../Serie_2_FSM_Basys3/Serie2_FSM_FPGA.md)
 
 ---
 
