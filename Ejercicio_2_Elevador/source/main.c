@@ -20,11 +20,11 @@
 // Motor puerta:   IN1–IN4 = PC8–PC11 AMARILLO
 
 // Keypad: columnas (piso 1–3) = PA0, PA1, PA4  → entradas con pull-up ROJO
-//         fila (común) = PA15 → salida (controlada por software) NARANJA
+//         fila (común) = PA7 → salida (controlada por software) NARANJA
 
 // Botones para llamar al piso:
 //         Piso 1 = PA6 (EXTI6)
-//         Piso 2 = PA7 (EXTI7)
+//         Piso 2 = PA9 (EXTI9)
 //         Piso 3 = PC12 (EXTI12)
 
 // Leds de cada piso

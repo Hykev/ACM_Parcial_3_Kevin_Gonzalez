@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 
 module clk_psc(
-    input  logic clk,
+    input  logic clk,         // 100 MHz
     output logic clk_scaled
 );
     logic [31:0] myreg = 0;
@@ -9,5 +9,5 @@ module clk_psc(
     always_ff @(posedge clk)
         myreg <= myreg + 1;
 
-    assign clk_scaled = myreg[27];
+    assign clk_scaled = myreg[26];
 endmodule

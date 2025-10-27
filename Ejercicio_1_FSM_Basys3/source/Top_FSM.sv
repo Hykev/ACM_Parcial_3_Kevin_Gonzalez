@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module Top(
+module Top_FSM(
     input  logic clk,
     input  logic R,
     input  logic iT,   // entrada libre para M1
@@ -49,5 +49,4 @@ module Top(
             default: TAL_text = DOWN;
         endcase
     end
-
 endmodule
