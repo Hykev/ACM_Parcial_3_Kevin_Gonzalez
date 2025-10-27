@@ -20,7 +20,7 @@ El sistema integra:
 - Visualización en displays 7 segmentos y LCD 16×2.  
 - Comunicación serial (USART2) y buzzer de señalización.
 
-📄 **Documentación completa:** [`Serie1_Elevador_STM32.md`](./Serie_1_Elevador/Serie1_Elevador_STM32.md)
+📄 **Documentación completa:** [`Serie1_Elevador_STM32.md`](../Serie_1_Elevador/Serie1_Elevador_STM32.md)
 
 ---
 
@@ -34,7 +34,7 @@ El proyecto combina dos módulos principales:
 
 Incluye además la descripción del flujo completo de **Vivado**, desde el RTL schematic hasta la generación del bitstream final.
 
-📄 **Documentación completa:** [`Serie2_FSM_FPGA.md`](./Serie_2_FSM_Basys3/Serie2_FSM_FPGA.md)
+📄 **Documentación completa:** [`Serie2_FSM_FPGA.md`](../Serie_2_FSM_Basys3/Serie2_FSM_FPGA.md)
 
 ---
 
