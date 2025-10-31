@@ -9,6 +9,11 @@ El objetivo es demostrar el control secuencial y modular del sistema mediante **
 
 ---
 
+## 🔩 Maqueta
+- Se adjuta el archivo .blend para ver el diseño completo en caso de que se quiera replicar la impresión 3D.
+
+---
+
 ## ⚙️ Componentes y Periféricos Utilizados
 
 | Módulo | Descripción | Pines en STM32 |
