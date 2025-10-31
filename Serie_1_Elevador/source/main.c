@@ -943,12 +943,6 @@ void isr_keypad_read(void) {
 // -x-x-x-x-x- funciones LCD -x-x-x-x-x-
 
 // Pequeño delay por software para cumplir tiempos del HD44780
-static inline void tiny_delay(void){
-    // ~2–5 us según reloj/optimizaciones (suficiente para E y entre nibbles)
-    for(volatile int i = 0; i < 300; i++) __asm__("nop");
-}
-
-
 void lcd_init(void){
     // RS=0, E=0, D4..D7=0
     GPIOB->BSRR = (1u<<(11+16)) | (1u<<(10+16));
@@ -971,9 +965,9 @@ void lcd_init(void){
 
 void lcd_pulso_E(void){
     GPIOB->BSRR = (1u<<10);          // E=1
-    tiny_delay();
+    
     GPIOB->BSRR = (1u<<(10+16));     // E=0
-    tiny_delay();
+    
 }
 
 // caracteres
@@ -987,8 +981,8 @@ void escribir_texto_lcd(char* mensaje) {
 
 void escribir_caracter_lcd(uint8_t c){
     GPIOB->BSRR = (1u<<11);          // RS=1
-    lcd_send_nibble((c>>4)&0x0F);    tiny_delay();
-    lcd_send_nibble(c & 0x0F);       tiny_delay();
+    lcd_send_nibble((c>>4)&0x0F);    
+    lcd_send_nibble(c & 0x0F);       
 }
 
 void lcd_send_nibble(uint8_t nibble){
@@ -1000,8 +994,8 @@ void lcd_send_nibble(uint8_t nibble){
 // comandos
 void lcd_cmd(uint8_t cmd){
     GPIOB->BSRR = (1u<<(11+16));     // RS=0
-    lcd_send_nibble((cmd>>4)&0x0F);  tiny_delay();
-    lcd_send_nibble(cmd & 0x0F);     tiny_delay();
+    lcd_send_nibble((cmd>>4)&0x0F);  
+    lcd_send_nibble(cmd & 0x0F);     
 }
 
 // esta funcion debe ser llamada cada cierto tiempo con una interrupcion de timer
