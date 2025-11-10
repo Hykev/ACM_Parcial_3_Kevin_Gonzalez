@@ -28,6 +28,8 @@ static volatile uint32_t door_steps_close = 1800;   // pasos para cerrar (AJUSTA
 static volatile uint16_t door_rate_hz     = 500;   // velocidad pasos/seg (AJUSTABLE)
 static volatile uint16_t door_hold_ms_cfg = 3000;  // tiempo abierta (ms) (AJUSTABLE)
 static volatile uint16_t door_hold_ms     = 0;     // contador runtime
+static volatile uint8_t  homing_mode = 0;        // 0=normal, 1=calibrando
+
 
 /* Señal cuándo termina un tramo (open/close) */
 static volatile uint8_t  door_step_done_flag = 0;
@@ -204,6 +206,11 @@ static void LCD_RequestRefresh(void){ lcd_dirty = 1; }
 
 /* Devuelve texto de estado (16 chars máx) */
 static const char* ui_state_text(void){
+    /* Si estamos en modo homing, priorizar ese mensaje */
+    if (homing_mode){
+        return "Calibrando";
+    }
+
     /* Prioridad: mostrar estado de puerta cuando estamos en HOLD_AT_FLOOR */
     if (state == HOLD_AT_FLOOR){
         switch(door_state){
@@ -221,6 +228,7 @@ static const char* ui_state_text(void){
         default:            return "Esperando";
     }
 }
+
 
 /* Envía a la LCD las dos líneas actuales */
 static void LCD_RefreshNow(void){
@@ -423,6 +431,18 @@ static void GPIO_init_all(void){
     GPIOA->PUPDR |=  ((1u<<(0*2))|(1u<<(1*2))|(1u<<(4*2)));
     GPIOA->MODER &= ~(3u<<(7*2)); GPIOA->MODER |= (1u<<(7*2)); GPIOA->ODR &= ~(1u<<7);
 
+    /* Tecla extra "A" del keypad en PA10 (entrada pull-up) */
+    GPIOA->MODER &= ~(3u<<(10*2));
+    GPIOA->PUPDR &= ~(3u<<(10*2));
+    GPIOA->PUPDR |=  (1u<<(10*2));   // pull-up
+
+    /* Endstop del riel en PB9 (entrada pull-up) */
+    GPIOB->MODER &= ~(3u<<(9*2));
+    GPIOB->PUPDR &= ~(3u<<(9*2));
+    GPIOB->PUPDR |=  (1u<<(9*2));    // pull-up
+
+
+
     /* Buzzer: PA8 salida push-pull */
     GPIOA->MODER &= ~(3u<<(8*2)); GPIOA->MODER |= (1u<<(8*2));
     GPIOA->OTYPER &= ~(1u<<8); GPIOA->OSPEEDR |= (3u<<(8*2)); GPIOA->PUPDR &= ~(3u<<(8*2));
@@ -563,6 +583,40 @@ static inline uint32_t hop_steps(uint8_t from, uint8_t to){
     return steps_between[from][to];
 }
 
+/* ============ HOMING (calibración al piso 1 usando endstop PB9) ============ */
+static void start_homing(void){
+    /* No iniciar homing si ya está en homing */
+    if (homing_mode){
+        uart_puts("HOMING: ya activo");
+        return;
+    }
+
+    /* Por seguridad: solo permitir homing cuando el ascensor está IDLE y la puerta idle */
+    if (state != IDLE || door_state != DOOR_IDLE){
+        uart_puts("HOMING: rechazo (no IDLE/door idle)");
+        return;
+    }
+
+    /* Limpiar cola y pendientes, apagar LEDs de piso */
+    qn = 0;
+    pending_mask = 0;
+    destFloor = 0;
+    LED_FloorOff(1); LED_FloorOff(2); LED_FloorOff(3);
+
+    /* Activar modo homing: bajar indefinidamente hasta que PB9 se active */
+    homing_mode = 1;
+
+    /* Reset de hop/stepper, y arrancar en dirección descendente */
+    hop_steps_remaining = 0;
+    hop_done_flag = 0;
+    stepper_disable();          // por higiene
+    stepper_enable(-1);         // -1 = bajar
+
+    uart_puts("HOMING: start (bajando)");
+    LCD_RequestRefresh();
+}
+
+
 /* ============ Lógica de ASCENSOR (sin paradas intermedias) ============ */
 static void start_next_destination(void){
     if (qn==0){ state=IDLE; moving_dir=0; hop_steps_remaining=0; stepper_disable(); return; }
@@ -689,15 +743,26 @@ static void tim21_isr_body(void){
     /* Heartbeat PA5 */
     if (++hb250 >= 250u){ hb250=0; GPIOA->ODR ^= (1u<<5); }
 
-    /* Keypad (PA7 fila=0; PA0/1/4 pull-up) */
-    uint8_t A = ( (GPIOA->IDR & (1u<<0)) ? 1:0 );
-    uint8_t B = ( (GPIOA->IDR & (1u<<1)) ? 1:0 );
-    uint8_t C = ( (GPIOA->IDR & (1u<<4)) ? 1:0 );
-    static uint8_t prevA=1, prevB=1, prevC=1;
+    /* Keypad (PA7 fila=0; PA0/1/4/10 pull-up) */
+    uint8_t A = ( (GPIOA->IDR & (1u<<0))  ? 1:0 );   // piso 1
+    uint8_t B = ( (GPIOA->IDR & (1u<<1))  ? 1:0 );   // piso 2
+    uint8_t C = ( (GPIOA->IDR & (1u<<4))  ? 1:0 );   // piso 3
+    uint8_t D = ( (GPIOA->IDR & (1u<<10)) ? 1:0 );   // tecla "A" -> homing
+
+    static uint8_t prevA=1, prevB=1, prevC=1, prevD=1;
+
     if (A==0 && prevA==1){ add_request(1); uart_puts("KEYPAD:1"); }
     if (B==0 && prevB==1){ add_request(2); uart_puts("KEYPAD:2"); }
     if (C==0 && prevC==1){ add_request(3); uart_puts("KEYPAD:3"); }
-    prevA=A; prevB=B; prevC=C;
+
+    /* Tecla A: iniciar calibración (homing) */
+    if (D==0 && prevD==1){
+        start_homing();
+        uart_puts("KEYPAD:A -> HOMING");
+    }
+
+    prevA=A; prevB=B; prevC=C; prevD=D;
+
 
     /* Animación cada 100 ms */
     if (++anim_tick_ms >= 100u){
@@ -709,8 +774,10 @@ static void tim21_isr_body(void){
     /* FSM principal del ascensor + puerta */
     switch(state){
     case IDLE:
-        if (qn>0) start_next_destination();
+        /* Si estamos homing, NO arrancar viajes normales */
+        if (!homing_mode && qn>0) start_next_destination();
         break;
+
 
     case MOVING_UP:
     case MOVING_DOWN:
@@ -767,6 +834,33 @@ static void tim21_isr_body(void){
 
     default: break;
     }
+
+        /* HOMING: comprobar endstop en PB9 (activo en 0) */
+    if (homing_mode){
+        if ( (GPIOB->IDR & (1u<<9)) == 0 ){
+            /* Llegó al fondo del riel: fijar como piso 1 y salir de homing */
+            homing_mode = 0;
+            stepper_disable();
+            moving_dir = 0;
+            hop_steps_remaining = 0;
+            hop_done_flag = 0;
+
+            currentFloor = 1;
+            destFloor    = 0;
+
+            /* Apagar LEDs y encender solo el piso 1 (referencia) */
+            LED_FloorOff(1); LED_FloorOff(2); LED_FloorOff(3);
+            LED_FloorOn(1);
+
+            /* Beep cortito para confirmar */
+            buzzer_ms = 200;
+            buzzer_active = 1;
+
+            uart_puts("HOMING: endstop PB9 -> floor=1");
+            LCD_RequestRefresh();
+        }
+    }
+
 
     /* Tiempo del buzzer */
     if (buzzer_ms){
@@ -829,19 +923,25 @@ void TIM2_IRQHandler(void){
         uint32_t srate = stepper_rate_hz ? stepper_rate_hz : 1u;
         uint32_t step_div  = (tick_hz / srate); if (step_div==0) step_div=1;
 
-        if (stepper_enabled && hop_steps_remaining>0){
+        if (stepper_enabled){
             if (++step_cnt >= step_div){
                 step_cnt=0;
                 stepper_step_once();
-                hop_steps_remaining--;
-                if (hop_steps_remaining==0){
-                    hop_done_flag = 1;
-                    stepper_disable();
+
+                /* En modo normal, contamos pasos y avisamos hop_done */
+                if (!homing_mode && hop_steps_remaining>0){
+                    hop_steps_remaining--;
+                    if (hop_steps_remaining==0){
+                        hop_done_flag = 1;
+                        stepper_disable();
+                    }
                 }
+                /* En modo homing NO tocamos hop_steps: el fin lo decide el endstop PB9 */
             }
         } else {
             step_cnt=0;
         }
+
 
         /* ---- STEPPER PUERTA (PC8..PC11) ---- */
         static uint16_t door_cnt=0;

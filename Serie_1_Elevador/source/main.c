@@ -9,18 +9,32 @@
 // 7-seg: leds = a,b,c,d,e,g → PB0–PB5 AZUL
 //        displays = PC0–PC3 NEGRO
 
+
 // LCD:    D4–D7 = PC4–PC7 AQUA
-//         E = PB10 VERDE
+//         E  = PB10 VERDE
 //         RS = PB11 VERDE
+//         RW = GND  (solo escritura)
+//         VO = potenciómetro 10kΩ entre VCC y GND (ajusta contraste)
+//         VSS = GND
+//         VDD = 5V o 3.3V (según módulo)
+//         A (LED+) = VCC (con resistencia 100–220Ω)
+//         K (LED–) = GND
 
 // Buzzer: PA8 CAFE
+//         → Conectado mediante transistor NPN (2N2222):
+//            - Base: resistor 1kΩ desde PA8
+//            - Emisor: a GND
+//            - Colector: al pin negativo (–) del buzzer
+//            - Pin positivo (+) del buzzer: a +5 V
 
 // Motor elevador: IN1–IN4 = PB12–PB15 BLANCO
 
 // Motor puerta:   IN1–IN4 = PC8–PC11 AMARILLO
 
-// Keypad: columnas (piso 1–3) = PA0, PA1, PA4  → entradas con pull-up ROJO
+// Keypad: columnas (piso 1–3+A) = PA0, PA1, PA4, PA10  → entradas con pull-up ROJO
 //         fila (común) = PA7 → salida (controlada por software) NARANJA
+
+// Switch impresora: S = PB9
 
 // Botones para llamar al piso:
 //         Piso 1 = PA6 (EXTI6)
